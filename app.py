@@ -8,44 +8,107 @@ import streamlit as st
 import edge_tts
 import imageio_ffmpeg
 
-st.set_page_config(page_title="1-Click AI Video Creator", layout="wide")
+st.set_page_config(page_title="1-Click AI Video Creator (ElevenLabs)", layout="wide")
 
 st.title("🎬 1-Click Script-to-Video AI Creator")
-st.write("Sirf script likhein aur Voice Actor select karein — Tool AI Voiceover banayega, clips download karega aur final video tayyar karega.")
+st.write("Script likhein, ElevenLabs ki kisi bhi voice ka preview sunein aur video generate karein.")
 
 # Sidebar Settings
-st.sidebar.header("🔑 API Setup")
+st.sidebar.header("🔑 API Keys Setup")
 pexels_api_key = st.sidebar.text_input("Pexels API Key", type="password")
+elevenlabs_api_key = st.sidebar.text_input("ElevenLabs API Key (Optional)", type="password")
 
+# --- ElevenLabs Voices Fetching & Selection ---
 st.sidebar.header("🎙️ Voiceover Character")
-voice_options = {
-    "Urdu - Asad (Male)": "ur-PK-AsadNeural",
-    "Urdu - Uzma (Female)": "ur-PK-UzmaNeural",
-    "Hindi - Madhur (Male)": "hi-IN-MadhurNeural",
-    "Hindi - Swara (Female)": "hi-IN-SwaraNeural",
-    "English (US) - Guy (Male)": "en-US-GuyNeural",
-    "English (US) - Jenny (Female)": "en-US-JennyNeural",
-    "English (UK) - Ryan (Male)": "en-GB-RyanNeural"
-}
 
-selected_voice_label = st.sidebar.selectbox("Voice Actor Chunein:", list(voice_options.keys()), index=0)
-selected_voice = voice_options[selected_voice_label]
+voice_engine = st.sidebar.radio("Voice Engine:", ["ElevenLabs (Hyper Realistic)", "Edge-TTS (Free)"])
 
-# Main Input
+selected_voice_id = None
+selected_edge_voice = None
+
+if voice_engine == "ElevenLabs (Hyper Realistic)":
+    if not elevenlabs_api_key:
+        st.sidebar.warning("Sidebar me apni ElevenLabs API Key enter karein.")
+    else:
+        try:
+            # Fetch all voices from ElevenLabs account
+            headers = {"xi-api-key": elevenlabs_api_key}
+            res = requests.get("https://api.elevenlabs.io/v1/voices", headers=headers, timeout=10)
+            if res.status_code == 200:
+                voices_data = res.json().get("voices", [])
+                
+                # Map name with metadata
+                voice_dict = {}
+                for v in voices_data:
+                    label = f"{v['name']} ({v.get('labels', {}).get('accent', 'Global')} - {v.get('labels', {}).get('gender', '')})"
+                    voice_dict[label] = {
+                        "id": v["voice_id"],
+                        "preview_url": v.get("preview_url")
+                    }
+                
+                selected_label = st.sidebar.selectbox("Voice Select Karein:", list(voice_dict.keys()))
+                selected_voice_id = voice_dict[selected_label]["id"]
+                preview_audio_url = voice_dict[selected_label]["preview_url"]
+                
+                # Voice Audio Preview Player
+                if preview_audio_url:
+                    st.sidebar.write("🔊 **Voice Preview:**")
+                    st.sidebar.audio(preview_audio_url)
+                else:
+                    st.sidebar.info("Is voice ka preview sample available nahi hai.")
+            else:
+                st.sidebar.error("Invalid ElevenLabs API Key!")
+        except Exception as e:
+            st.sidebar.error(f"Voice load error: {e}")
+else:
+    # Free Fallback Voices
+    edge_voices = {
+        "Urdu - Asad (Male)": "ur-PK-AsadNeural",
+        "Urdu - Uzma (Female)": "ur-PK-UzmaNeural",
+        "Hindi - Madhur (Male)": "hi-IN-MadhurNeural",
+        "Hindi - Swara (Female)": "hi-IN-SwaraNeural",
+        "English (US) - Guy (Male)": "en-US-GuyNeural",
+        "English (US) - Jenny (Female)": "en-US-JennyNeural"
+    }
+    selected_edge_label = st.sidebar.selectbox("Edge Voice Select Karein:", list(edge_voices.keys()))
+    selected_edge_voice = edge_voices[selected_edge_label]
+
+# Main Script Input
 script_text = st.text_area(
     "Apni Script Yahan Paste Karein:",
     height=230,
     placeholder="Technology har roz badal rahi hai.\nArtificial intelligence hamari zindagi ko asan bana rahi hai.\nAane wala waqt automated tools ka hai."
 )
 
+# Helpers
 async def generate_edge_voice(text, voice, output_path):
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(output_path)
 
+def generate_elevenlabs_voice(text, voice_id, api_key, output_path):
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    headers = {
+        "xi-api-key": api_key,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "text": text,
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75
+        }
+    }
+    r = requests.post(url, json=payload, headers=headers, timeout=60)
+    if r.status_code == 200:
+        with open(output_path, "wb") as f:
+            f.write(r.content)
+        return True
+    else:
+        raise Exception(f"ElevenLabs Error: {r.text}")
+
 def get_audio_duration(ffmpeg_path, file_path):
-    cmd = [
-        ffmpeg_path, "-i", file_path, "-f", "null", "-"
-    ]
+    cmd = [ffmpeg_path, "-i", file_path, "-f", "null", "-"]
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     for line in result.stderr.split("\n"):
         if "Duration" in line:
@@ -95,21 +158,28 @@ if st.button("🚀 Generate Full Video Now", type="primary", use_container_width
         st.error("Sidebar me Pexels API Key enter karein!")
     elif not script_text.strip():
         st.error("Pehle script likhein!")
+    elif voice_engine == "ElevenLabs (Hyper Realistic)" and not selected_voice_id:
+        st.error("ElevenLabs API Key aur Voice zaroor select karein!")
     else:
         status_box = st.status("Video generation pipeline active...", expanded=True)
         ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
 
         with tempfile.TemporaryDirectory() as temp_dir:
             try:
-                # 1. Voiceover
-                status_box.write(f"Voiceover generate ho raha hai ({selected_voice_label})...")
+                # 1. Voiceover Generation
                 audio_path = os.path.join(temp_dir, "voiceover.mp3")
-                asyncio.run(generate_edge_voice(script_text, selected_voice, audio_path))
+                
+                if voice_engine == "ElevenLabs (Hyper Realistic)":
+                    status_box.write("ElevenLabs AI Voiceover generate ho raha hai...")
+                    generate_elevenlabs_voice(script_text, selected_voice_id, elevenlabs_api_key, audio_path)
+                else:
+                    status_box.write("Edge-TTS Voiceover generate ho raha hai...")
+                    asyncio.run(generate_edge_voice(script_text, selected_edge_voice, audio_path))
 
                 target_duration = get_audio_duration(ffmpeg_bin, audio_path)
-                status_box.write(f"Voiceover tayyar! Total Duration: {round(target_duration, 1)}s")
+                status_box.write(f"Voiceover mukammal! Duration: {round(target_duration, 1)}s")
 
-                # 2. Clips Download
+                # 2. Clips Search & Download
                 raw_lines = [line.strip() for line in script_text.split("\n") if line.strip()]
                 lines = []
                 for l in raw_lines:
@@ -120,7 +190,7 @@ if st.button("🚀 Generate Full Video Now", type="primary", use_container_width
                     lines = ["technology background", "business modern", "city life", "abstract motion"]
 
                 downloaded_clips = []
-                status_box.write("Video clips download ho rahi hain...")
+                status_box.write("Relevant stock video footage download ho rahi hai...")
 
                 for idx, line in enumerate(lines):
                     query = line[:35].strip()
@@ -143,10 +213,10 @@ if st.button("🚀 Generate Full Video Now", type="primary", use_container_width
                                 break
 
                 if not downloaded_clips:
-                    st.error("Clips download nahi huin. API key check karein.")
+                    st.error("Video clips download nahi huin. Pexels key check karein.")
                     st.stop()
 
-                # 3. Fast Concat & Render
+                # 3. Concat & Final Render
                 status_box.write("Clips merge aur final video render ho rahi hai...")
                 concat_file = os.path.join(temp_dir, "concat_list.txt")
                 with open(concat_file, "w") as f:
@@ -169,7 +239,7 @@ if st.button("🚀 Generate Full Video Now", type="primary", use_container_width
                 subprocess.run(render_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
                 status_box.update(label="Complete!", state="complete", expanded=False)
-                st.success("✅ Aapki video mukammal edit ho kar tayyar hai!")
+                st.success("✅ ElevenLabs Voiceover ke sath video tayyar hai!")
 
                 with open(output_path, "rb") as f:
                     video_bytes = f.read()
