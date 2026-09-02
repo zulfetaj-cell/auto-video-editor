@@ -1,4 +1,4 @@
 streamlit
-moviepy
 requests
 edge-tts
+imageio[ffmpeg]
