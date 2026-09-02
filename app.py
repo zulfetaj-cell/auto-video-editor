@@ -2,7 +2,7 @@ import os
 import random
 import tempfile
 import streamlit as st
-from moviepy.editor import AudioFileClip, VideoFileClip, concatenate_videoclips, vfx
+from moviepy import AudioFileClip, VideoFileClip, concatenate_videoclips, vfx
 
 st.set_page_config(page_title="Auto Video Sync Editor", layout="centered")
 
@@ -60,22 +60,23 @@ if st.button("🚀 Render & Generate Video", type="primary"):
                     current_path = saved_video_paths[file_idx % len(saved_video_paths)]
                     clip = VideoFileClip(current_path)
 
-                    clip = clip.resize(height=1080)
+                    clip = clip.resized(height=1080)
 
                     needed_duration = target_duration - accumulated_duration
                     if clip.duration > needed_duration:
-                        clip = clip.subclip(0, needed_duration)
+                        clip = clip.subclipped(0, needed_duration)
                         accumulated_duration += needed_duration
                     else:
                         accumulated_duration += clip.duration
 
-                    clip = clip.fx(vfx.fadein, 0.3).fx(vfx.fadeout, 0.3)
+                    # Transitions
+                    clip = clip.with_effects([vfx.FadeIn(0.3), vfx.FadeOut(0.3)])
                     video_clips.append(clip)
                     file_idx += 1
 
-                status_box.write("Video concatenate aur voiceover sync ho raha hai...")
+                status_box.write("Video concatenate aur audio attach ho rahi hai...")
                 final_video = concatenate_videoclips(video_clips, method="compose")
-                final_video = final_video.set_audio(audio_clip)
+                final_video = final_video.with_audio(audio_clip)
 
                 output_path = os.path.join(temp_dir, "final_output.mp4")
                 status_box.write("Final MP4 export ho rahi hai...")
