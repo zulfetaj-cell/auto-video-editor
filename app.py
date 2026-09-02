@@ -2,21 +2,20 @@ import os
 import random
 import tempfile
 import asyncio
-import time
+import subprocess
 import requests
 import streamlit as st
 import edge_tts
-from moviepy import AudioFileClip, VideoFileClip, concatenate_videoclips, vfx
+import imageio_ffmpeg
 
-st.set_page_config(page_title="One-Click AI Video Creator", layout="wide")
+st.set_page_config(page_title="1-Click AI Video Creator", layout="wide")
 
 st.title("🎬 1-Click Script-to-Video AI Creator")
-st.write("Sirf script likhein aur Voice Actor select karein — Tool AI Voiceover banayega, relevant clips uthayega aur final video generate karega.")
+st.write("Sirf script likhein aur Voice Actor select karein — Tool AI Voiceover banayega, clips download karega aur final video tayyar karega.")
 
 # Sidebar Settings
 st.sidebar.header("🔑 API Setup")
 pexels_api_key = st.sidebar.text_input("Pexels API Key", type="password")
-pixabay_api_key = st.sidebar.text_input("Pixabay API Key (Optional)", type="password")
 
 st.sidebar.header("🎙️ Voiceover Character")
 voice_options = {
@@ -32,30 +31,38 @@ voice_options = {
 selected_voice_label = st.sidebar.selectbox("Voice Actor Chunein:", list(voice_options.keys()), index=0)
 selected_voice = voice_options[selected_voice_label]
 
-# Main Interface
+# Main Input
 script_text = st.text_area(
     "Apni Script Yahan Paste Karein:",
-    height=250,
-    placeholder="Misal ke tor par:\nTechnology har roz badal rahi hai.\nArtificial Intelligence hamari zindagi ko asan bana rahi hai.\nAane wala waqt automated tools ka hai."
+    height=230,
+    placeholder="Technology har roz badal rahi hai.\nArtificial intelligence hamari zindagi ko asan bana rahi hai.\nAane wala waqt automated tools ka hai."
 )
 
 async def generate_edge_voice(text, voice, output_path):
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(output_path)
 
+def get_audio_duration(ffmpeg_path, file_path):
+    cmd = [
+        ffmpeg_path, "-i", file_path, "-f", "null", "-"
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    for line in result.stderr.split("\n"):
+        if "Duration" in line:
+            time_str = line.split("Duration:")[1].split(",")[0].strip()
+            h, m, s = time_str.split(":")
+            return float(h) * 3600 + float(m) * 60 + float(s)
+    return 10.0
+
 def fetch_pexels_video_urls(query, api_key):
-    headers = {
-        "Authorization": api_key,
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
-    url = f"https://api.pexels.com/videos/search?query={query}&per_page=8&orientation=landscape"
+    headers = {"Authorization": api_key, "User-Agent": "Mozilla/5.0"}
+    url = f"https://api.pexels.com/videos/search?query={query}&per_page=6&orientation=landscape"
     links = []
     try:
         r = requests.get(url, headers=headers, timeout=15)
         if r.status_code == 200:
             data = r.json()
             for v in data.get("videos", []):
-                # Target standard 720p or 1080p files to avoid connection drops
                 for f in v.get("video_files", []):
                     if f.get("width") in [1280, 1920]:
                         links.append(f.get("link"))
@@ -67,125 +74,102 @@ def fetch_pexels_video_urls(query, api_key):
         pass
     return links
 
-def download_video_file(url, save_path, retries=3):
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    for attempt in range(retries):
-        try:
-            with requests.get(url, headers=headers, stream=True, timeout=30) as resp:
-                resp.raise_for_status()
-                with open(save_path, "wb") as f:
-                    for chunk in resp.iter_content(chunk_size=1024 * 512):
-                        if chunk:
-                            f.write(chunk)
-            # Verify file size
-            if os.path.exists(save_path) and os.path.getsize(save_path) > 10000:
-                return True
-        except Exception:
-            time.sleep(1)
-            if os.path.exists(save_path):
-                try:
-                    os.remove(save_path)
-                except Exception:
-                    pass
+def download_video_file(url, save_path):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        with requests.get(url, headers=headers, stream=True, timeout=25) as resp:
+            resp.raise_for_status()
+            with open(save_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 512):
+                    if chunk:
+                        f.write(chunk)
+        if os.path.exists(save_path) and os.path.getsize(save_path) > 10000:
+            return True
+    except Exception:
+        pass
     return False
 
-# Render Process
+# Main Trigger
 if st.button("🚀 Generate Full Video Now", type="primary", use_container_width=True):
-    if not pexels_api_key and not pixabay_api_key:
-        st.error("Sidebar me Pexels API Key zaroor enter karein!")
+    if not pexels_api_key:
+        st.error("Sidebar me Pexels API Key enter karein!")
     elif not script_text.strip():
         st.error("Pehle script likhein!")
     else:
         status_box = st.status("Video generation pipeline active...", expanded=True)
-        
+        ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
+
         with tempfile.TemporaryDirectory() as temp_dir:
             try:
-                # 1. Natural AI Voiceover Generation
-                status_box.write(f"Realistic AI Voiceover generate ho raha hai ({selected_voice_label})...")
+                # 1. Voiceover
+                status_box.write(f"Voiceover generate ho raha hai ({selected_voice_label})...")
                 audio_path = os.path.join(temp_dir, "voiceover.mp3")
                 asyncio.run(generate_edge_voice(script_text, selected_voice, audio_path))
 
-                audio_clip = AudioFileClip(audio_path)
-                target_duration = audio_clip.duration
-                status_box.write(f"Voiceover tayyar! Total Duration: {round(target_duration, 1)} seconds")
+                target_duration = get_audio_duration(ffmpeg_bin, audio_path)
+                status_box.write(f"Voiceover tayyar! Total Duration: {round(target_duration, 1)}s")
 
-                # 2. Extract Keywords & Download Matching Clips
+                # 2. Clips Download
                 raw_lines = [line.strip() for line in script_text.split("\n") if line.strip()]
                 lines = []
                 for l in raw_lines:
-                    # Break long sentences into short query keywords
                     sentences = [s.strip() for s in l.replace(".", "\n").replace(";", "\n").split("\n") if len(s.strip()) > 3]
                     lines.extend(sentences)
 
                 if not lines:
-                    lines = ["business luxury", "technology data", "modern success", "city skyscrapers"]
+                    lines = ["technology background", "business modern", "city life", "abstract motion"]
 
                 downloaded_clips = []
-                status_box.write("Stock video footage safely download ho rahi hai...")
+                status_box.write("Video clips download ho rahi hain...")
 
                 for idx, line in enumerate(lines):
                     query = line[:35].strip()
                     urls = fetch_pexels_video_urls(query, pexels_api_key)
-                    
                     if not urls:
-                        urls = fetch_pexels_video_urls("cinematic technology finance", pexels_api_key)
+                        urls = fetch_pexels_video_urls("cinematic modern background", pexels_api_key)
 
                     for candidate_url in urls:
-                        clip_file = os.path.join(temp_dir, f"clip_{idx}_{random.randint(100, 999)}.mp4")
+                        clip_file = os.path.join(temp_dir, f"raw_{idx}_{random.randint(100, 999)}.mp4")
                         if download_video_file(candidate_url, clip_file):
-                            downloaded_clips.append(clip_file)
-                            break  # Successfully downloaded 1 clip for this query
+                            clean_clip = os.path.join(temp_dir, f"clean_{idx}_{random.randint(100, 999)}.mp4")
+                            norm_cmd = [
+                                ffmpeg_bin, "-y", "-i", clip_file,
+                                "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,fps=30",
+                                "-c:v", "libx264", "-preset", "ultrafast", "-an", clean_clip
+                            ]
+                            subprocess.run(norm_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            if os.path.exists(clean_clip):
+                                downloaded_clips.append(clean_clip)
+                                break
 
                 if not downloaded_clips:
-                    st.error("Video clips download nahi ho sakein. Pexels API Key dobara check karein.")
+                    st.error("Clips download nahi huin. API key check karein.")
                     st.stop()
 
-                # 3. Trim, Transition & Match Duration
-                status_box.write("Clips ko voiceover ke sath auto-sync aur edit kiya ja raha hai...")
-                video_clips = []
-                accumulated_duration = 0
-                file_idx = 0
-                random.shuffle(downloaded_clips)
+                # 3. Fast Concat & Render
+                status_box.write("Clips merge aur final video render ho rahi hai...")
+                concat_file = os.path.join(temp_dir, "concat_list.txt")
+                with open(concat_file, "w") as f:
+                    for _ in range(6):
+                        random.shuffle(downloaded_clips)
+                        for c in downloaded_clips:
+                            f.write(f"file '{c}'\n")
 
-                while accumulated_duration < target_duration:
-                    curr_file = downloaded_clips[file_idx % len(downloaded_clips)]
-                    try:
-                        clip = VideoFileClip(curr_file).resized(height=1080)
+                output_path = os.path.join(temp_dir, "final_video.mp4")
+                render_cmd = [
+                    ffmpeg_bin, "-y", "-f", "concat", "-safe", "0", "-i", concat_file,
+                    "-i", audio_path,
+                    "-c:v", "libx264", "-preset", "ultrafast",
+                    "-c:a", "aac", "-b:a", "192k",
+                    "-map", "0:v:0", "-map", "1:a:0",
+                    "-t", str(target_duration),
+                    "-pix_fmt", "yuv420p",
+                    output_path
+                ]
+                subprocess.run(render_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-                        needed_duration = target_duration - accumulated_duration
-                        if clip.duration > needed_duration:
-                            clip = clip.subclipped(0, needed_duration)
-                            accumulated_duration += needed_duration
-                        else:
-                            accumulated_duration += clip.duration
-
-                        clip = clip.with_effects([vfx.FadeIn(0.3), vfx.FadeOut(0.3)])
-                        video_clips.append(clip)
-                    except Exception:
-                        pass
-                    file_idx += 1
-
-                # 4. Final Video Render
-                status_box.write("Final video render ho rahi hai...")
-                final_video = concatenate_videoclips(video_clips, method="compose").with_audio(audio_clip)
-
-                output_path = os.path.join(temp_dir, "final_ai_video.mp4")
-                final_video.write_videofile(
-                    output_path,
-                    codec="libx264",
-                    audio_codec="aac",
-                    fps=30,
-                    threads=4,
-                    preset="ultrafast"
-                )
-
-                audio_clip.close()
-                final_video.close()
-                for c in video_clips:
-                    c.close()
-
-                status_box.update(label="Video complete!", state="complete", expanded=False)
-                st.success("✅ Aapki mukammal video tayyar hai!")
+                status_box.update(label="Complete!", state="complete", expanded=False)
+                st.success("✅ Aapki video mukammal edit ho kar tayyar hai!")
 
                 with open(output_path, "rb") as f:
                     video_bytes = f.read()
@@ -194,7 +178,7 @@ if st.button("🚀 Generate Full Video Now", type="primary", use_container_width
                 st.download_button(
                     label="📥 Download Video",
                     data=video_bytes,
-                    file_name="complete_ai_video.mp4",
+                    file_name="final_ai_video.mp4",
                     mime="video/mp4"
                 )
 
