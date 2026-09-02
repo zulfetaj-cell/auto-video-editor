@@ -1,2 +1,4 @@
 streamlit
 moviepy
+requests
+edge-tts
