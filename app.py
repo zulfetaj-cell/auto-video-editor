@@ -2,6 +2,7 @@ import os
 import random
 import tempfile
 import asyncio
+import time
 import requests
 import streamlit as st
 import edge_tts
@@ -42,38 +43,51 @@ async def generate_edge_voice(text, voice, output_path):
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(output_path)
 
-def fetch_pexels_video(query, api_key):
-    headers = {"Authorization": api_key}
-    url = f"https://api.pexels.com/videos/search?query={query}&per_page=5&orientation=landscape"
+def fetch_pexels_video_urls(query, api_key):
+    headers = {
+        "Authorization": api_key,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    url = f"https://api.pexels.com/videos/search?query={query}&per_page=8&orientation=landscape"
+    links = []
     try:
         r = requests.get(url, headers=headers, timeout=15)
         if r.status_code == 200:
             data = r.json()
-            if data.get("videos"):
-                video = random.choice(data["videos"])
-                for f in video.get("video_files", []):
-                    if f.get("width", 0) >= 1280:
-                        return f.get("link")
-                return video["video_files"][0]["link"]
+            for v in data.get("videos", []):
+                # Target standard 720p or 1080p files to avoid connection drops
+                for f in v.get("video_files", []):
+                    if f.get("width") in [1280, 1920]:
+                        links.append(f.get("link"))
+                        break
+                else:
+                    if v.get("video_files"):
+                        links.append(v["video_files"][0].get("link"))
     except Exception:
         pass
-    return None
+    return links
 
-def fetch_pixabay_video(query, api_key):
-    url = f"https://pixabay.com/api/videos/?key={api_key}&q={query}&per_page=5"
-    try:
-        r = requests.get(url, timeout=15)
-        if r.status_code == 200:
-            data = r.json()
-            if data.get("hits"):
-                video = random.choice(data["hits"])
-                videos_dict = video.get("videos", {})
-                for quality in ["large", "medium", "small"]:
-                    if quality in videos_dict and videos_dict[quality].get("url"):
-                        return videos_dict[quality]["url"]
-    except Exception:
-        pass
-    return None
+def download_video_file(url, save_path, retries=3):
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    for attempt in range(retries):
+        try:
+            with requests.get(url, headers=headers, stream=True, timeout=30) as resp:
+                resp.raise_for_status()
+                with open(save_path, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=1024 * 512):
+                        if chunk:
+                            f.write(chunk)
+            # Verify file size
+            if os.path.exists(save_path) and os.path.getsize(save_path) > 10000:
+                return True
+        except Exception:
+            time.sleep(1)
+            if os.path.exists(save_path):
+                try:
+                    os.remove(save_path)
+                except Exception:
+                    pass
+    return False
 
 # Render Process
 if st.button("🚀 Generate Full Video Now", type="primary", use_container_width=True):
@@ -96,37 +110,34 @@ if st.button("🚀 Generate Full Video Now", type="primary", use_container_width
                 status_box.write(f"Voiceover tayyar! Total Duration: {round(target_duration, 1)} seconds")
 
                 # 2. Extract Keywords & Download Matching Clips
-                lines = [line.strip() for line in script_text.split("\n") if line.strip()]
+                raw_lines = [line.strip() for line in script_text.split("\n") if line.strip()]
+                lines = []
+                for l in raw_lines:
+                    # Break long sentences into short query keywords
+                    sentences = [s.strip() for s in l.replace(".", "\n").replace(";", "\n").split("\n") if len(s.strip()) > 3]
+                    lines.extend(sentences)
+
                 if not lines:
-                    lines = ["technology future", "business growth", "cinematic abstract"]
+                    lines = ["business luxury", "technology data", "modern success", "city skyscrapers"]
 
                 downloaded_clips = []
-                status_box.write("Stock video footage download ho rahi hai...")
+                status_box.write("Stock video footage safely download ho rahi hai...")
 
                 for idx, line in enumerate(lines):
-                    query = line.replace(":", " ").replace(".", " ")[:40].strip()
-                    video_url = None
+                    query = line[:35].strip()
+                    urls = fetch_pexels_video_urls(query, pexels_api_key)
+                    
+                    if not urls:
+                        urls = fetch_pexels_video_urls("cinematic technology finance", pexels_api_key)
 
-                    if pexels_api_key:
-                        video_url = fetch_pexels_video(query, pexels_api_key)
-                    if not video_url and pixabay_api_key:
-                        video_url = fetch_pixabay_video(query, pixabay_api_key)
-
-                    # Generic fallback if no result found
-                    if not video_url and pexels_api_key:
-                        video_url = fetch_pexels_video("abstract technology motion", pexels_api_key)
-
-                    if video_url:
-                        clip_file = os.path.join(temp_dir, f"clip_{idx}.mp4")
-                        resp = requests.get(video_url, stream=True, timeout=25)
-                        with open(clip_file, "wb") as f:
-                            for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                                if chunk:
-                                    f.write(chunk)
-                        downloaded_clips.append(clip_file)
+                    for candidate_url in urls:
+                        clip_file = os.path.join(temp_dir, f"clip_{idx}_{random.randint(100, 999)}.mp4")
+                        if download_video_file(candidate_url, clip_file):
+                            downloaded_clips.append(clip_file)
+                            break  # Successfully downloaded 1 clip for this query
 
                 if not downloaded_clips:
-                    st.error("Video clips nahi mil sakin. API Key ya internet check karein.")
+                    st.error("Video clips download nahi ho sakein. Pexels API Key dobara check karein.")
                     st.stop()
 
                 # 3. Trim, Transition & Match Duration
@@ -134,20 +145,24 @@ if st.button("🚀 Generate Full Video Now", type="primary", use_container_width
                 video_clips = []
                 accumulated_duration = 0
                 file_idx = 0
+                random.shuffle(downloaded_clips)
 
                 while accumulated_duration < target_duration:
                     curr_file = downloaded_clips[file_idx % len(downloaded_clips)]
-                    clip = VideoFileClip(curr_file).resized(height=1080)
+                    try:
+                        clip = VideoFileClip(curr_file).resized(height=1080)
 
-                    needed_duration = target_duration - accumulated_duration
-                    if clip.duration > needed_duration:
-                        clip = clip.subclipped(0, needed_duration)
-                        accumulated_duration += needed_duration
-                    else:
-                        accumulated_duration += clip.duration
+                        needed_duration = target_duration - accumulated_duration
+                        if clip.duration > needed_duration:
+                            clip = clip.subclipped(0, needed_duration)
+                            accumulated_duration += needed_duration
+                        else:
+                            accumulated_duration += clip.duration
 
-                    clip = clip.with_effects([vfx.FadeIn(0.3), vfx.FadeOut(0.3)])
-                    video_clips.append(clip)
+                        clip = clip.with_effects([vfx.FadeIn(0.3), vfx.FadeOut(0.3)])
+                        video_clips.append(clip)
+                    except Exception:
+                        pass
                     file_idx += 1
 
                 # 4. Final Video Render
