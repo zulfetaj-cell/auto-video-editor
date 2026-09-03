@@ -9,10 +9,10 @@ import streamlit as st
 import edge_tts
 import imageio_ffmpeg
 
-st.set_page_config(page_title="Pro AI Video Engine", layout="wide")
+st.set_page_config(page_title="Fast AI Video Engine", layout="wide")
 
-st.title("🎬 Professional AI Script-to-Video Engine")
-st.write("Smart Visual Search, Animated Subtitles aur Dynamic Transitions ke sath automated video generator.")
+st.title("🎬 Fast AI Script-to-Video Engine")
+st.write("Lightweight & non-blocking automated video pipeline.")
 
 # Sidebar Settings
 st.sidebar.header("🔑 API Setup")
@@ -24,28 +24,21 @@ voice_library = {
     "Urdu - Uzma (Female News/Doc)": "ur-PK-UzmaNeural",
     "Hindi - Madhur (Male Deep)": "hi-IN-MadhurNeural",
     "Hindi - Swara (Female Warm)": "hi-IN-SwaraNeural",
-    "English (US) - Christopher (Documentary Male)": "en-US-ChristopherNeural",
-    "English (US) - Guy (YouTube Male)": "en-US-GuyNeural",
-    "English (US) - Jenny (Professional Female)": "en-US-JennyNeural"
+    "English (US) - Christopher (Male)": "en-US-ChristopherNeural",
+    "English (US) - Guy (Male)": "en-US-GuyNeural",
+    "English (US) - Jenny (Female)": "en-US-JennyNeural"
 }
 
 selected_voice_label = st.sidebar.selectbox("Voice Actor:", list(voice_library.keys()), index=0)
 selected_voice = voice_library[selected_voice_label]
 
-# Subtitle Styling Option
-st.sidebar.header("📝 Subtitle Style")
-font_size = st.sidebar.slider("Subtitle Font Size", min_value=18, max_value=32, value=24)
-sub_color = st.sidebar.selectbox("Subtitle Color", ["Yellow (&H0000FFFF)", "White (&H00FFFFFF)", "Cyan (&H00FFFF00)"])
-color_hex = sub_color.split("(")[-1].replace(")", "")
-
 # Main Input
 script_text = st.text_area(
     "Apni Script Yahan Paste Karein:",
-    height=220,
-    placeholder="Technology har roz badal rahi hai.\nArtificial intelligence hamari zindagi ko asan bana rahi hai.\nAane wala waqt automated machine systems ka hai."
+    height=200,
+    placeholder="Technology har roz badal rahi hai.\nArtificial intelligence hamari zindagi ko asan bana rahi hai."
 )
 
-# --- Visual Keyword Extraction ---
 STOP_WORDS = {
     "is", "are", "the", "a", "an", "and", "or", "in", "on", "at", "to", "for", "with", 
     "about", "that", "this", "it", "of", "by", "from", "be", "as", "you", "your", "we",
@@ -59,11 +52,10 @@ def extract_smart_query(sentence):
     if len(meaningful) >= 2:
         return f"{meaningful[0]} {meaningful[1]}"
     elif len(meaningful) == 1:
-        return f"{meaningful[0]} footage"
-    return "cinematic business technology"
+        return f"{meaningful[0]} technology"
+    return "technology business motion"
 
-# --- Edge-TTS with Fixed Subtitle Timings ---
-async def generate_voice_and_subtitles(text, voice, audio_path, srt_path):
+async def generate_voice_and_vtt(text, voice, audio_path, vtt_path):
     communicate = edge_tts.Communicate(text, voice)
     submaker = edge_tts.SubMaker()
     with open(audio_path, "wb") as file:
@@ -72,34 +64,37 @@ async def generate_voice_and_subtitles(text, voice, audio_path, srt_path):
                 file.write(chunk["data"])
             elif chunk["type"] == "WordBoundary":
                 submaker.feed(chunk)
-
-    # Version-safe SRT generator (get_srt vs generate_subs)
-    srt_content = submaker.get_srt() if hasattr(submaker, 'get_srt') else submaker.generate_subs()
     
-    with open(srt_path, "w", encoding="utf-8") as file:
-        file.write(srt_content)
+    # Save Subtitles
+    srt_text = submaker.get_srt() if hasattr(submaker, 'get_srt') else submaker.generate_subs()
+    with open(vtt_path, "w", encoding="utf-8") as file:
+        file.write(srt_text)
 
 def get_media_duration(ffmpeg_path, file_path):
-    cmd = [ffmpeg_path, "-i", file_path, "-f", "null", "-"]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    for line in result.stderr.split("\n"):
-        if "Duration" in line:
-            time_str = line.split("Duration:")[1].split(",")[0].strip()
-            h, m, s = time_str.split(":")
-            return float(h) * 3600 + float(m) * 60 + float(s)
+    try:
+        cmd = [ffmpeg_path, "-i", file_path, "-f", "null", "-"]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        for line in result.stderr.split("\n"):
+            if "Duration" in line:
+                time_str = line.split("Duration:")[1].split(",")[0].strip()
+                h, m, s = time_str.split(":")
+                return float(h) * 3600 + float(m) * 60 + float(s)
+    except Exception:
+        pass
     return 6.0
 
 def fetch_pexels_video_urls(query, api_key):
     headers = {"Authorization": api_key, "User-Agent": "Mozilla/5.0"}
-    url = f"https://api.pexels.com/videos/search?query={query}&per_page=6&orientation=landscape"
+    url = f"https://api.pexels.com/videos/search?query={query}&per_page=5&orientation=landscape"
     links = []
     try:
-        r = requests.get(url, headers=headers, timeout=15)
+        r = requests.get(url, headers=headers, timeout=8)
         if r.status_code == 200:
             data = r.json()
             for v in data.get("videos", []):
                 for f in v.get("video_files", []):
-                    if f.get("width") in [1280, 1920]:
+                    # Pick lightweight 720p / 540p files for instant processing
+                    if f.get("width") in [1280, 960, 640]:
                         links.append(f.get("link"))
                         break
                 else:
@@ -112,135 +107,120 @@ def fetch_pexels_video_urls(query, api_key):
 def download_video_file(url, save_path):
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        with requests.get(url, headers=headers, stream=True, timeout=25) as resp:
+        with requests.get(url, headers=headers, stream=True, timeout=12) as resp:
             resp.raise_for_status()
             with open(save_path, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=1024 * 512):
+                for chunk in resp.iter_content(chunk_size=1024 * 256):
                     if chunk:
                         f.write(chunk)
-        if os.path.exists(save_path) and os.path.getsize(save_path) > 10000:
+        if os.path.exists(save_path) and os.path.getsize(save_path) > 5000:
             return True
     except Exception:
         pass
     return False
 
 # Main Render Process
-if st.button("🚀 Generate Full Video with Subtitles & VFX", type="primary", use_container_width=True):
+if st.button("🚀 Generate Full Video Now", type="primary", use_container_width=True):
     if not pexels_api_key:
         st.error("Sidebar me Pexels API Key zaroor enter karein!")
     elif not script_text.strip():
         st.error("Pehle script likhein!")
     else:
-        status_box = st.status("Advanced Video Pipeline running...", expanded=True)
+        status_box = st.status("Fast processing shuru ho rahi hai...", expanded=True)
         ffmpeg_bin = imageio_ffmpeg.get_ffmpeg_exe()
 
         with tempfile.TemporaryDirectory() as temp_dir:
             try:
-                # 1. Voiceover & Subtitles Generation
-                status_box.write("Realistic Voiceover aur Subtitles timestamps generate ho rahe hain...")
+                # 1. Voiceover
+                status_box.write("Audio voiceover generate ho raha hai...")
                 audio_path = os.path.join(temp_dir, "voiceover.mp3")
-                srt_path = os.path.join(temp_dir, "captions.srt")
-                asyncio.run(generate_voice_and_subtitles(script_text, selected_voice, audio_path, srt_path))
+                sub_path = os.path.join(temp_dir, "captions.srt")
+                asyncio.run(generate_voice_and_vtt(script_text, selected_voice, audio_path, sub_path))
 
                 target_duration = get_media_duration(ffmpeg_bin, audio_path)
-                status_box.write(f"Voiceover duration: {round(target_duration, 1)}s")
+                status_box.write(f"Voiceover mukammal: {round(target_duration, 1)}s")
 
-                # 2. Smart Visual Query Splitting
+                # 2. Extract Keywords & Download
                 raw_lines = [l.strip() for l in script_text.replace(".", "\n").replace(";", "\n").split("\n") if len(l.strip()) > 3]
                 if not raw_lines:
-                    raw_lines = ["modern business technology", "financial growth digital", "futuristic concept"]
+                    raw_lines = ["modern technology", "digital business", "abstract motion"]
 
                 downloaded_clips = []
-                status_box.write("Sentence meaning analyze karke relevant stock videos download ki ja rahi hain...")
+                status_box.write("Video clips download aur standardize ho rahi hain...")
 
-                for idx, line in enumerate(raw_lines):
-                    smart_query = extract_smart_query(line)
-                    urls = fetch_pexels_video_urls(smart_query, pexels_api_key)
+                for idx, line in enumerate(raw_lines[:8]):  # Max 8 scenes to keep speed ultra fast
+                    query = extract_smart_query(line)
+                    urls = fetch_pexels_video_urls(query, pexels_api_key)
                     if not urls:
-                        urls = fetch_pexels_video_urls("cinematic modern background", pexels_api_key)
+                        urls = fetch_pexels_video_urls("cinematic background", pexels_api_key)
 
                     for candidate_url in urls:
                         clip_file = os.path.join(temp_dir, f"raw_{idx}_{random.randint(100, 999)}.mp4")
                         if download_video_file(candidate_url, clip_file):
-                            raw_dur = get_media_duration(ffmpeg_bin, clip_file)
-                            clip_target_dur = random.uniform(4.5, 6.5)
-                            start_time = 0.0
-                            if raw_dur > clip_target_dur + 1:
-                                start_time = random.uniform(0, raw_dur - clip_target_dur)
-
-                            clean_clip = os.path.join(temp_dir, f"clean_{idx}_{random.randint(100, 999)}.mp4")
+                            clean_clip = os.path.join(temp_dir, f"clean_{idx}.mp4")
                             
-                            # Scale + Ken Burns Motion + 720p HD
+                            # Fast 720p scaling without complex filters
                             norm_cmd = [
                                 ffmpeg_bin, "-y",
-                                "-ss", str(start_time),
-                                "-t", str(clip_target_dur),
+                                "-t", "6.0",
                                 "-i", clip_file,
-                                "-vf", "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,zoompan=z='min(zoom+0.0015,1.2)':d=150:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1280x720,fps=30",
-                                "-c:v", "libx264", "-preset", "ultrafast", "-threads", "2", "-an",
+                                "-vf", "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,fps=30",
+                                "-c:v", "libx264", "-preset", "ultrafast", "-an",
                                 clean_clip
                             ]
-                            subprocess.run(norm_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            subprocess.run(norm_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
                             if os.path.exists(clean_clip):
                                 downloaded_clips.append(clean_clip)
                                 break
 
                 if not downloaded_clips:
-                    st.error("Video clips download nahi huin. Pexels API Key check karein.")
+                    st.error("Video clips download nahi huin. Pexels API Key verify karein.")
                     st.stop()
 
-                # 3. Merge Footage
-                status_box.write("Footage merge aur transitions stitch ho rahi hain...")
+                # 3. Fast Concat List
+                status_box.write("Clips merge aur audio sync ho raha hai...")
                 concat_file = os.path.join(temp_dir, "concat_list.txt")
                 with open(concat_file, "w") as f:
-                    for _ in range(8):
+                    for _ in range(6):
                         random.shuffle(downloaded_clips)
                         for c in downloaded_clips:
                             f.write(f"file '{c}'\n")
 
-                merged_raw = os.path.join(temp_dir, "merged_raw.mp4")
-                merge_cmd = [
-                    ffmpeg_bin, "-y", "-f", "concat", "-safe", "0", "-i", concat_file,
-                    "-c:v", "libx264", "-preset", "ultrafast", "-threads", "2",
-                    "-t", str(target_duration),
-                    merged_raw
-                ]
-                subprocess.run(merge_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-                # 4. Burn Subtitles & Audio Sync
-                status_box.write("Screen par synchronized subtitles burn aur final video render ho rahi hai...")
-                output_path = os.path.join(temp_dir, "final_subtitled_video.mp4")
-                
-                srt_escaped = srt_path.replace("\\", "/").replace(":", "\\:")
-                sub_filter = f"subtitles='{srt_escaped}':force_style='FontSize={font_size},PrimaryColour={color_hex},OutlineColour=&H80000000,BorderStyle=3,Outline=2,Shadow=1,Alignment=2,MarginV=35'"
-
-                final_render_cmd = [
+                # 4. Direct Merge without Heavy Filtering (No Stuck/Crash)
+                output_path = os.path.join(temp_dir, "final_video.mp4")
+                render_cmd = [
                     ffmpeg_bin, "-y",
-                    "-i", merged_raw,
+                    "-f", "concat", "-safe", "0", "-i", concat_file,
                     "-i", audio_path,
-                    "-vf", sub_filter,
-                    "-c:v", "libx264", "-preset", "ultrafast", "-threads", "2",
+                    "-c:v", "copy",
                     "-c:a", "aac", "-b:a", "128k",
                     "-map", "0:v:0", "-map", "1:a:0",
-                    "-pix_fmt", "yuv420p",
+                    "-t", str(target_duration),
                     output_path
                 ]
-                subprocess.run(final_render_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(render_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
 
                 status_box.update(label="Complete!", state="complete", expanded=False)
-                st.success("✅ Professional Video with Subtitles & Visual Effects tayyar hai!")
+                st.success("✅ Video bina kisi rukawat ke tayyar hai!")
 
                 with open(output_path, "rb") as f:
                     video_bytes = f.read()
 
                 st.video(video_bytes)
-                st.download_button(
-                    label="📥 Download Subtitled Video",
-                    data=video_bytes,
-                    file_name="pro_ai_video_with_subs.mp4",
-                    mime="video/mp4"
-                )
+                
+                # Subtitles download button
+                with open(sub_path, "rb") as sf:
+                    sub_bytes = sf.read()
 
+                col_d1, col_d2 = st.columns(2)
+                with col_d1:
+                    st.download_button("📥 Download Final Video", data=video_bytes, file_name="final_video.mp4", mime="video/mp4")
+                with col_d2:
+                    st.download_button("📝 Download Captions (.SRT)", data=sub_bytes, file_name="captions.srt", mime="text/plain")
+
+            except subprocess.TimeoutExpired:
+                status_box.update(label="Process Timeout!", state="error")
+                st.error("Server bohot slow hone ki wajah se timeout hua. Streamlit app ko Reboot karein.")
             except Exception as e:
                 status_box.update(label="Error aya!", state="error")
                 st.error(f"Processing error: {str(e)}")
