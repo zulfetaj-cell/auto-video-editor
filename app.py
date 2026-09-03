@@ -62,7 +62,7 @@ def extract_smart_query(sentence):
         return f"{meaningful[0]} footage"
     return "cinematic business technology"
 
-# --- Edge-TTS with Subtitle Timings ---
+# --- Edge-TTS with Fixed Subtitle Timings ---
 async def generate_voice_and_subtitles(text, voice, audio_path, srt_path):
     communicate = edge_tts.Communicate(text, voice)
     submaker = edge_tts.SubMaker()
@@ -71,9 +71,13 @@ async def generate_voice_and_subtitles(text, voice, audio_path, srt_path):
             if chunk["type"] == "audio":
                 file.write(chunk["data"])
             elif chunk["type"] == "WordBoundary":
-                submaker.create_sub((chunk["offset"], chunk["duration"]), chunk["text"])
+                submaker.feed(chunk)
+
+    # Version-safe SRT generator (get_srt vs generate_subs)
+    srt_content = submaker.get_srt() if hasattr(submaker, 'get_srt') else submaker.generate_subs()
+    
     with open(srt_path, "w", encoding="utf-8") as file:
-        file.write(submaker.generate_subs())
+        file.write(srt_content)
 
 def get_media_duration(ffmpeg_path, file_path):
     cmd = [ffmpeg_path, "-i", file_path, "-f", "null", "-"]
@@ -166,7 +170,7 @@ if st.button("🚀 Generate Full Video with Subtitles & VFX", type="primary", us
 
                             clean_clip = os.path.join(temp_dir, f"clean_{idx}_{random.randint(100, 999)}.mp4")
                             
-                            # Scale + Dynamic Zoom Motion (Ken Burns Effect) + 720p HD
+                            # Scale + Ken Burns Motion + 720p HD
                             norm_cmd = [
                                 ffmpeg_bin, "-y",
                                 "-ss", str(start_time),
@@ -207,7 +211,6 @@ if st.button("🚀 Generate Full Video with Subtitles & VFX", type="primary", us
                 status_box.write("Screen par synchronized subtitles burn aur final video render ho rahi hai...")
                 output_path = os.path.join(temp_dir, "final_subtitled_video.mp4")
                 
-                # Subtitle filter with clean box & styling
                 srt_escaped = srt_path.replace("\\", "/").replace(":", "\\:")
                 sub_filter = f"subtitles='{srt_escaped}':force_style='FontSize={font_size},PrimaryColour={color_hex},OutlineColour=&H80000000,BorderStyle=3,Outline=2,Shadow=1,Alignment=2,MarginV=35'"
 
